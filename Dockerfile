@@ -26,7 +26,16 @@ ENV USER=ardupilot
 WORKDIR /home/ardupilot
 
 # --- ArduPilot SITL ---
-RUN git clone --recurse-submodules -j8 https://github.com/ArduPilot/ardupilot.git
+RUN git config --global http.version HTTP/1.1 && \
+    git clone https://github.com/ArduPilot/ardupilot.git
+
+RUN cd /home/ardupilot/ardupilot && \
+    for attempt in 1 2 3; do \
+      git -c http.version=HTTP/1.1 submodule update --init --recursive --jobs=2 && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "Submodule download failed; retrying in 5 seconds (attempt $attempt of 3)..." && \
+      sleep 5; \
+    done
 RUN cd ardupilot && Tools/environment_install/install-prereqs-ubuntu.sh -y
 ENV PATH="/home/ardupilot/.local/bin:/home/ardupilot/ardupilot/Tools/autotest:${PATH}"
 RUN cd ardupilot && ./waf configure --board sitl && ./waf copter

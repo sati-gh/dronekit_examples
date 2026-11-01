@@ -23,7 +23,7 @@ class GroundControlStation:
 
         self.rc_values = {"1": 1500, "2": 1500, "3": 1000, "4": 1500}
         self.rc_pressed_keys = set()
-        self.rc_keyboard_enabled = tk.BooleanVar(value=False)
+        self.rc_keyboard_enabled = tk.BooleanVar(value=True)
         self.rc_channel_widgets = {}
 
         self.create_widgets()

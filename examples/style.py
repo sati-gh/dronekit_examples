@@ -24,16 +24,16 @@ class AppStyle:
     HEADING_FONT = ("Arial", 11, "bold")
 
     WINDOW_TITLE = "Ground Control Station"
-    WINDOW_SIZE = "960x500"
-    MIN_WIDTH = 960
-    MIN_HEIGHT = 500
+    WINDOW_SIZE = "1400x800"
+    MIN_WIDTH = 1100
+    MIN_HEIGHT = 650
 
     @classmethod
     def configure_window(cls, root):
         root.title(cls.WINDOW_TITLE)
         root.geometry(cls.WINDOW_SIZE)
         root.minsize(cls.MIN_WIDTH, cls.MIN_HEIGHT)
-        root.resizable(False, False)
+        root.resizable(True, True)
         root.configure(bg=cls.WINDOW_BG)
         root.option_add("*Font", cls.DEFAULT_FONT)
         root.option_add("*Button.Cursor", "hand2")

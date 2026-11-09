@@ -1,7 +1,11 @@
 import threading
 import time
+import math
+
 import tkinter as tk
 from tkinter import messagebox
+from tkintermapview import TkinterMapView
+from PIL import Image, ImageDraw, ImageTk
 
 from dronekit import connect, VehicleMode
 from style import AppStyle
@@ -10,7 +14,7 @@ from style import AppStyle
 class GroundControlStation:
     MODES = ("GUIDED", "LOITER", "STABILIZE", "LAND", "RTL")
     ARMING_MODES = ("GUIDED", "LOITER", "STABILIZE")
-    RC_MODES = ("STABILIZE", "LOITER")
+    RC_MODES = ("STABILIZE", "LOITER", "LAND", "RTL")
     RC_MIN, RC_MAX, RC_CENTER = 1000, 2000, 1500
     RC_STEP, RC_UPDATE_MS = 20, 50
 
@@ -23,10 +27,14 @@ class GroundControlStation:
 
         self.rc_values = {"1": 1500, "2": 1500, "3": 1000, "4": 1500}
         self.rc_pressed_keys = set()
-        self.rc_keyboard_enabled = tk.BooleanVar(value=True)
         self.rc_channel_widgets = {}
 
+        self.map_marker = None
+        self.drone_icon_photo = None
+        self.map_update_interval = 250
+
         self.create_widgets()
+        self.update_map()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind_all("<KeyPress>", self.on_key_press)
         self.root.bind_all("<KeyRelease>", self.on_key_release)
@@ -44,7 +52,7 @@ class GroundControlStation:
                 row=0, column=0, padx=6, pady=5, sticky="w")
         self.connection_entry = AppStyle.make_entry(
             connection, width=25)
-        self.connection_entry.insert(0, "127.0.0.1:14550")
+        self.connection_entry.insert(0, "udpin:0.0.0.0:14550")
         self.connection_entry.grid(
             row=0, column=1, padx=6, pady=5, sticky="ew")
         self.connect_button = AppStyle.make_button(
@@ -60,11 +68,18 @@ class GroundControlStation:
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         right = tk.Frame(body, bg=AppStyle.WINDOW_BG)
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        body.columnconfigure(0, weight=5)
-        body.columnconfigure(1, weight=6)
+        body.columnconfigure(0, weight=9)
+        body.columnconfigure(1, weight=3)
         body.rowconfigure(0, weight=1)
-        modes = AppStyle.make_section(
-            left, "Flight Modes", padx=8, pady=7)
+        map_section = AppStyle.make_section(left, "Drone Map", padx=5, pady=5)
+        map_section.pack(fill="both", expand=True, pady=4)
+        self.map_widget = TkinterMapView(map_section, corner_radius=0)
+        self.map_widget.pack(fill="both", expand=True)
+        self.map_widget.set_zoom(16)
+        self.position_label = AppStyle.make_status_label(left, "GPS: Waiting for connection")
+        self.yaw_label = AppStyle.make_status_label(left, "Yaw: unknown")
+        self.map_status_label = AppStyle.make_status_label(left, "Map: Waiting for GPS")
+        modes = AppStyle.make_section(right, "Flight Modes", padx=8, pady=7)
         modes.pack(fill="x", pady=4)
         self.mode_buttons = []
         for col, mode in enumerate(self.MODES):
@@ -74,40 +89,27 @@ class GroundControlStation:
             button.grid(row=0, column=col, padx=2, pady=4, sticky="ew")
             modes.columnconfigure(col, weight=1)
             self.mode_buttons.append(button)
-        takeoff = AppStyle.make_section(
-            left, "Takeoff", padx=8, pady=7)
+        takeoff = AppStyle.make_section(right, "Takeoff", padx=8, pady=7)
         takeoff.pack(fill="x", pady=4)
-        AppStyle.make_label(
-            takeoff, "Target altitude (m):").grid(
-                row=0, column=0, padx=5, pady=5, sticky="w")
+        AppStyle.make_label(takeoff, "Target altitude (m):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.altitude_entry = AppStyle.make_entry(takeoff, width=8)
         self.altitude_entry.insert(0, "10")
         self.altitude_entry.grid(row=0, column=1, padx=5, pady=5)
-        self.takeoff_button = AppStyle.make_button(
-            takeoff, "Takeoff", self.takeoff)
+        self.takeoff_button = AppStyle.make_button(takeoff, "Takeoff", self.takeoff)
         self.takeoff_button.grid(row=0, column=2, padx=8, pady=5)
-        arm_frame = tk.Frame(left, bg=AppStyle.WINDOW_BG)
+        arm_frame = tk.Frame(right, bg=AppStyle.WINDOW_BG)
         arm_frame.pack(fill="x", pady=5)
-        self.arm_button = AppStyle.make_button(
-            arm_frame, "Arm", self.toggle_arm,
-            bg=AppStyle.ARM_BUTTON_BG)
+        self.arm_button = AppStyle.make_button(arm_frame, "Arm", self.toggle_arm, bg=AppStyle.ARM_BUTTON_BG)
         self.arm_button.config(width=18, pady=7)
         self.arm_button.pack()
-        status = AppStyle.make_section(
-            left, "Vehicle Status", padx=10, pady=6)
+        status = AppStyle.make_section(right, "Vehicle Status", padx=10, pady=6)
         status.pack(fill="both", expand=True, pady=4)
-        self.connection_status_label = AppStyle.make_status_label(
-            status, "Connection: Disconnected")
-        self.arming_status_label = AppStyle.make_status_label(
-            status, "Arming: Unknown")
-        self.mode_label = AppStyle.make_status_label(
-            status, "Flight mode: Unknown")
-        self.flight_status_label = AppStyle.make_status_label(
-            status, "Flight status: Unknown")
-        self.altitude_label = AppStyle.make_status_label(
-            status, "Altitude: Unknown")
-        self.armable_label = AppStyle.make_status_label(
-            status, "Ready to arm: Unknown")
+        self.connection_status_label = AppStyle.make_status_label(status, "Connection: Disconnected")
+        self.arming_status_label = AppStyle.make_status_label(status, "Arming: Unknown")
+        self.mode_label = AppStyle.make_status_label(status, "Flight mode: Unknown")
+        self.flight_status_label = AppStyle.make_status_label(status, "Flight status: Unknown")
+        self.altitude_label = AppStyle.make_status_label(status, "Altitude: Unknown")
+        self.armable_label = AppStyle.make_status_label(status, "Ready to arm: Unknown")
         self.create_rc_section(right)
         self.status_label = tk.Label(
             self.root,
@@ -310,8 +312,6 @@ class GroundControlStation:
 
 
     def on_key_press(self, event):
-        if not self.rc_keyboard_enabled.get():
-            return
         if isinstance(event.widget, (tk.Entry, tk.Spinbox)):
             return
         key = event.keysym.lower()
@@ -320,19 +320,6 @@ class GroundControlStation:
 
     def on_key_release(self, event):
         self.rc_pressed_keys.discard(event.keysym.lower())
-
-    def toggle_keyboard_control(self):
-        self.rc_pressed_keys.clear()
-        if not self.rc_keyboard_enabled.get():
-            self.reset_rc_values()
-            if self.vehicle is not None:
-                self.clear_rc_overrides(self.vehicle)
-            self.set_status("Keyboard RC control disabled.")
-        else:
-            self.set_status(
-                "Keyboard RC enabled. Overrides are sent only when armed "
-                "in STABILIZE or LOITER.")
-        self.draw_rc_channels()
 
     def reset_rc_values(self):
         self.rc_values.update({"1": 1500, "2": 1500, "3": 1000, "4": 1500})
@@ -367,15 +354,11 @@ class GroundControlStation:
         if self.closing:
             return
         vehicle = self.vehicle
-        enabled = self.rc_keyboard_enabled.get()
-
-        if enabled:
-            self.process_rc_keys()
-
-        allowed = (
-            enabled and vehicle is not None and not self.busy
-            and vehicle.armed and vehicle.mode.name in self.RC_MODES
-        )
+        self.process_rc_keys()
+        allowed = (vehicle is not None
+                   and not self.busy
+                   and vehicle.armed
+                   and vehicle.mode.name in self.RC_MODES)
         if allowed:
             try:
                 vehicle.channels.overrides = self.rc_values.copy()
@@ -406,6 +389,66 @@ class GroundControlStation:
                 10, y_value, width - 10, height - 2,
                 fill=AppStyle.RC_BAR_COLOR, outline="")
             widgets["value_label"].config(text=f"{value} us")
+
+    def create_drone_icon(self, heading):
+        image =  Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.polygon([(32, 3), (44, 51), (32, 41), (20, 51)],
+                     fill="#8052CC",
+                     outline="white",
+                     width=2)
+        rotated = image.rotate(-heading, resample=Image.Resampling.BICUBIC)
+        return ImageTk.PhotoImage(rotated)
+        
+    def update_map(self):
+        if self.closing:
+            return
+        vehicle = self.vehicle
+        if vehicle is not None:
+            try:
+                position = vehicle.location.global_frame
+                lat = position.lat
+                lon = position.lon
+                heading = vehicle.heading
+                if lat is not None and lon is not None:
+                    self.position_label.config(text=f"GPS: {lat:.6f}, {lon:.6f}")
+                    if heading is not None:
+                        heading = float(heading) % 360
+                        self.yaw_label.config(text=f"Heading: {heading:.1f}°")
+                    else:
+                        self.yaw_label.config(text="Heading: Unavailable")
+                    if self.map_marker is None:
+                        self.map_widget.set_position(lat, lon)
+                        self.drone_icon_photo = (
+                            self.create_drone_icon(
+                                heading if heading is not None else 0
+                            )
+                        )
+                        self.map_marker = self.map_widget.set_marker(
+                            lat,
+                            lon,
+                            text="Drone",
+                            icon=self.drone_icon_photo,
+                            icon_anchor="center"
+                        )
+                    else:
+                        self.map_marker.set_position(lat, lon)
+                        if heading is not None:
+                            self.drone_icon_photo = (self.create_drone_icon(heading))
+                            self.map_marker.change_icon(self.drone_icon_photo)
+                    self.map_status_label.config(text="Map: Live telemetry")
+                else:
+                    self.map_status_label.config(text="Map: Waiting for GPS fix")
+            except Exception as exc:
+                self.map_status_label.config(text=f"Map: Telemetry unavailable ({exc})")
+        else:
+            self.position_label.config(text="GPS: Waiting for connection")
+            self.yaw_label.config(text="Heading: Unknown")
+            self.map_status_label.config(text="Map: Disconnected")
+        self.root.after(
+            self.map_update_interval,
+            self.update_map
+        )
 
     def refresh_status(self):
         if self.closing:
@@ -445,7 +488,6 @@ class GroundControlStation:
     def update_controls(self):
         connected = self.vehicle is not None
         vehicle = self.vehicle
-
         self.connection_entry.config(
             state="disabled" if connected or self.busy else "normal")
         self.connect_button.config(
@@ -453,7 +495,6 @@ class GroundControlStation:
         self.disconnect_button.config(
             state=("normal" if connected and not self.busy
                    and not vehicle.armed else "disabled"))
-
         for button in self.mode_buttons:
             button.config(
                 state="normal" if connected and not self.busy else "disabled")
